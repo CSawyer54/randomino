@@ -95,7 +95,7 @@ body::after {
   font-size: 20px;
   letter-spacing: .12em;
 }
-.sound { grid-column: 3; grid-row: 1; justify-self: end; }
+.hdr-group { grid-column: 3; grid-row: 1; justify-self: end; display: flex; gap: 6px; }
 #pauseBtn { grid-column: 1; grid-row: 1; justify-self: start; }
 .hdr-btn {
   font-family: var(--font-display);
@@ -108,7 +108,8 @@ body::after {
   padding: 8px 10px;
   cursor: pointer;
 }
-.sound[aria-pressed="false"] { color: var(--dim); }
+.toggle[aria-pressed="true"] { color: var(--lime); border-color: rgba(125, 255, 90, .45); }
+.toggle[aria-pressed="false"] { color: var(--dim); text-decoration: line-through; }
 .hdr-btn:hover { border-color: var(--cyan); }
 
 /* ---------- Cabinet ---------- */
@@ -445,7 +446,10 @@ html.land .queue { flex-direction: row; }
   <header class="marquee">
     <h1 class="logo" aria-label="Randomino"><span>R</span><span>A</span><span>N</span><span>D</span><span>O</span><span>M</span><span>I</span><span>N</span><span>O</span></h1>
     <button class="hdr-btn touch-only" id="pauseBtn" type="button">PAUSE</button>
-    <button class="hdr-btn sound" id="soundBtn" type="button" aria-pressed="true">SOUND ON</button>
+    <div class="hdr-group">
+      <button class="hdr-btn toggle" id="musicBtn" type="button" aria-pressed="true">MUSIC</button>
+      <button class="hdr-btn toggle" id="soundBtn" type="button" aria-pressed="true">SFX</button>
+    </div>
     <p class="tagline" id="tagline">EVERY PIECE IS BUILT FRESH FROM 1–5 BLOCKS</p>
   </header>
 
@@ -492,6 +496,7 @@ html.land .queue { flex-direction: row; }
           <kbd>SPC</kbd><span>Hard drop</span>
           <kbd>C</kbd><span>Hold</span>
           <kbd>P</kbd><span>Pause</span>
+          <kbd>M</kbd><span>Music</span>
         </div>
       </div>
     </aside>
@@ -595,6 +600,141 @@ html.land .queue { flex-direction: row; }
     level() { [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, .14, 'triangle', .7, 1, i * .07)); },
     over() { [392, 330, 262, 196, 131].forEach((f, i) => this.tone(f, .28, 'sawtooth', .45, .92, i * .17)); },
     start() { [262, 392, 523, 784].forEach((f, i) => this.tone(f, .1, 'square', .45, 1, i * .06)); }
+  };
+
+  // ---------- Music: "Korobeiniki" (1861 Russian folk song) as a chiptune loop ----------
+  // Lead lines are written as NOTE:eighths, "-" is a rest, "|" marks a bar.
+  const SONG = {
+    a: 'E5:2 B4 C5 D5:2 C5 B4 | A4:2 A4 C5 E5:2 D5 C5 | B4:3 C5 D5:2 E5:2 | C5:2 A4:2 A4:2 -:2 |' +
+       '-:1 D5:2 F5 A5:2 G5 F5 | E5:3 C5 E5:2 D5 C5 | B4:2 B4 C5 D5:2 E5:2 | C5:2 A4:2 A4:2 -:2',
+    aBass: ['E2', 'A2', 'E2', 'A2', 'D2', 'C2', 'E2', 'A2'],
+    b: 'E4:4 C4:4 | D4:4 B3:4 | C4:4 A3:4 | G#3:4 B3:4 | E4:4 C4:4 | D4:4 B3:4 | C4:2 E4:2 A4:4 | G#4:8',
+    bBass: ['A2', 'E2', 'A2', 'E2', 'A2', 'E2', 'A2', 'E2'],
+    form: ['a', 'a', 'b']
+  };
+  const midi = s => {
+    const m = /^([A-G])(#?)(\d)$/.exec(s);
+    return 12 * (+m[3] + 1) + { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[m[1]] + (m[2] ? 1 : 0);
+  };
+  const hz = n => 440 * Math.pow(2, (n - 69) / 12);
+
+  const Music = {
+    on: store.get('music', true),
+    playing: false, timer: null, out: null, noise: null,
+    steps: null, step: 0, stepTime: 0,
+
+    // flatten the song into one list of events per eighth-note step
+    build() {
+      const steps = [];
+      const add = (i, ev) => { (steps[i] = steps[i] || []).push(ev); };
+      let base = 0;
+      for (const part of SONG.form) {
+        let t = base;
+        for (const tok of SONG[part].replace(/\|/g, ' ').trim().split(/\s+/)) {
+          const [note, len] = tok.split(':');
+          const n = len ? +len : 1;
+          if (note !== '-') add(t, { v: 'lead', f: hz(midi(note)), len: n });
+          t += n;
+        }
+        SONG[part + 'Bass'].forEach((root, bar) => {
+          const f = hz(midi(root));
+          for (let e = 0; e < 8; e++) {
+            const at = base + bar * 8 + e;
+            add(at, { v: 'bass', f: e % 2 ? f * 2 : f, len: 1 });
+            if (e % 2) add(at, { v: 'hat' });
+            if (e === 0 || e === 4) add(at, { v: 'kick' });
+            if (e === 2 || e === 6) add(at, { v: 'snare' });
+          }
+        });
+        base += 64;
+      }
+      for (let i = 0; i < base; i++) steps[i] = steps[i] || [];
+      this.steps = steps;
+    },
+
+    ensure() {
+      const ctx = Sfx.ctx;
+      if (!ctx) return false;
+      if (!this.out) {
+        this.out = ctx.createGain();
+        this.out.gain.value = 0.1;
+        this.out.connect(ctx.destination);
+        this.noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+        const d = this.noise.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      }
+      if (!this.steps) this.build();
+      return true;
+    },
+
+    // tempo climbs with the level; chaos runs a little hotter
+    eighth() {
+      const lvl = game ? game.level : 1;
+      const bpm = Math.min(196, 132 + (lvl - 1) * 5 + (game && game.mode === 'chaos' ? 10 : 0));
+      return 30 / bpm;
+    },
+
+    voice(ev, t, dur) {
+      const ctx = Sfx.ctx, chaos = game && game.mode === 'chaos';
+      if (ev.v === 'lead' || ev.v === 'bass') {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        const lead = ev.v === 'lead';
+        o.type = lead ? (chaos ? 'sawtooth' : 'square') : 'triangle';
+        o.frequency.setValueAtTime(ev.f, t);
+        const vol = lead ? (chaos ? 0.32 : 0.42) : 0.9;
+        const len = dur * ev.len * (lead ? 0.9 : 0.8);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+        g.gain.setValueAtTime(vol, t + len * 0.7);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+        o.connect(g); g.connect(this.out);
+        o.start(t); o.stop(t + len + 0.02);
+      } else if (ev.v === 'kick') {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(150, t);
+        o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+        g.gain.setValueAtTime(0.9, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+        o.connect(g); g.connect(this.out);
+        o.start(t); o.stop(t + 0.16);
+      } else {
+        const hat = ev.v === 'hat';
+        const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+        s.buffer = this.noise;
+        f.type = hat ? 'highpass' : 'bandpass';
+        f.frequency.value = hat ? 7000 : 1800;
+        const len = hat ? 0.03 : 0.1;
+        g.gain.setValueAtTime(hat ? 0.18 : 0.45, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+        s.connect(f); f.connect(g); g.connect(this.out);
+        s.start(t, Math.random() * 0.5); s.stop(t + len + 0.01);
+      }
+    },
+
+    pump() {
+      const ctx = Sfx.ctx;
+      while (this.stepTime < ctx.currentTime + 0.15) {
+        const dur = this.eighth();
+        for (const ev of this.steps[this.step]) this.voice(ev, this.stepTime, dur);
+        this.stepTime += dur;
+        this.step = (this.step + 1) % this.steps.length;
+      }
+    },
+
+    play(delay = 0.05) {
+      if (!this.on || this.playing || !this.ensure()) return;
+      this.playing = true;
+      this.stepTime = Sfx.ctx.currentTime + delay;
+      this.pump();
+      this.timer = setInterval(() => this.pump(), 25);
+    },
+    pause() {
+      this.playing = false;
+      clearInterval(this.timer);
+      this.timer = null;
+    },
+    stop() { this.pause(); this.step = 0; }
   };
 
   // ---------- Random polyomino generator ----------
@@ -703,6 +843,8 @@ html.land .queue { flex-direction: row; }
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     spawn();
     Sfx.start();
+    Music.stop();
+    Music.play(0.45);   // let the start jingle finish first
     hud(true);
   }
 
@@ -903,13 +1045,14 @@ html.land .queue { flex-direction: row; }
     state = 'over';
     overT = 0; overShown = false;
     held.left = held.right = held.down = false; dasDir = 0;
+    Music.stop();
     Sfx.over();
     shake = Math.max(shake, 0.6);
   }
 
   function togglePause() {
-    if (state === 'play') { state = 'pause'; held.left = held.right = held.down = false; dasDir = 0; showOverlay('pause'); }
-    else if (state === 'pause') { state = 'play'; overlay.hidden = true; if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); }
+    if (state === 'play') { state = 'pause'; held.left = held.right = held.down = false; dasDir = 0; Music.pause(); showOverlay('pause'); }
+    else if (state === 'pause') { state = 'play'; overlay.hidden = true; Sfx.init(); Music.play(); if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); }
   }
 
   // ---------- Effects ----------
@@ -1329,7 +1472,7 @@ html.land .queue { flex-direction: row; }
       return;
     }
     if (act === 'pause') { togglePause(); return; }
-    if (act === 'mute') { toggleMute(); return; }
+    if (act === 'music') { toggleMusic(); return; }
     if (state === 'title' || (state === 'over' && overShown)) {
       if (act === 'drop' || act === 'rotate') newGame();
       return;
@@ -1355,7 +1498,7 @@ html.land .queue { flex-direction: row; }
     ArrowLeft: 'left', ArrowRight: 'right', ArrowDown: 'down', ArrowUp: 'rotate',
     x: 'rotate', X: 'rotate', z: 'rotateL', Z: 'rotateL', ' ': 'drop',
     c: 'hold', C: 'hold', Shift: 'hold', p: 'pause', P: 'pause', Escape: 'pause',
-    m: 'mute', M: 'mute', Enter: 'start'
+    m: 'music', M: 'music', Enter: 'start'
   };
   window.addEventListener('keydown', e => {
     const act = KEYMAP[e.key];
@@ -1429,13 +1572,24 @@ html.land .queue { flex-direction: row; }
     btn.addEventListener('contextmenu', e => e.preventDefault());
   }
 
-  const soundBtn = $('soundBtn');
+  const soundBtn = $('soundBtn'), musicBtn = $('musicBtn');
   function paintSound() {
-    soundBtn.textContent = Sfx.muted ? 'SOUND OFF' : 'SOUND ON';
     soundBtn.setAttribute('aria-pressed', String(!Sfx.muted));
+    soundBtn.title = Sfx.muted ? 'Sound effects off' : 'Sound effects on';
+    musicBtn.setAttribute('aria-pressed', String(Music.on));
+    musicBtn.title = Music.on ? 'Music on (M)' : 'Music off (M)';
   }
   function toggleMute() { Sfx.muted = !Sfx.muted; store.set('muted', Sfx.muted); paintSound(); if (!Sfx.muted) { Sfx.init(); Sfx.hold(); } }
+  function toggleMusic() {
+    Music.on = !Music.on;
+    store.set('music', Music.on);
+    paintSound();
+    Sfx.init();
+    if (!Music.on) Music.pause();
+    else if (state === 'play') Music.play();
+  }
   soundBtn.addEventListener('click', () => { toggleMute(); soundBtn.blur(); });
+  musicBtn.addEventListener('click', () => { toggleMusic(); musicBtn.blur(); });
   paintSound();
 
   // ---------- Device detection and layout ----------
