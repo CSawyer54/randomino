@@ -24,6 +24,8 @@
   color-scheme: dark;
 }
 html, body { background: var(--night); color: var(--ink); }
+/* stop iOS double-tap zoom on fast taps; the board and pad override this with none */
+*, *::before, *::after { touch-action: manipulation; }
 [hidden] { display: none !important; }
 body {
   margin: 0;
@@ -258,6 +260,27 @@ kbd.arrow { font-family: "Segoe UI Symbol", "Arial", sans-serif; font-size: 13px
 .results { display: grid; grid-template-columns: auto auto; gap: 8px 18px; font-family: var(--font-display); font-size: 10px; text-align: left; }
 .results dt { color: var(--dim); }
 .results dd { margin: 0; color: var(--sun); text-align: right; font-variant-numeric: tabular-nums; }
+.top3 { width: 100%; max-width: 15rem; font-family: var(--font-display); font-size: 10px; }
+.top3-h { margin: 0 0 8px; color: var(--cyan); letter-spacing: .08em; text-align: center; }
+.top3 ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.top3 li { display: grid; grid-template-columns: 1.6em auto 1fr; align-items: center; gap: 8px; min-height: 30px; box-sizing: border-box; padding: 4px 8px; border: 2px solid var(--line); text-align: left; }
+.top3 .rk { color: var(--dim); }
+.top3 .nm { color: var(--ink); letter-spacing: .15em; }
+.top3 .sc { color: var(--sun); text-align: right; font-variant-numeric: tabular-nums; }
+.top3 li.me { border-color: var(--lime); box-shadow: 0 0 12px rgba(125, 255, 90, .45); }
+.top3 li.empty .nm, .top3 li.empty .sc { color: var(--line); }
+.top3 input {
+  width: 4.6em; box-sizing: border-box;
+  padding: 5px 4px 3px;
+  font-family: var(--font-display); font-size: 16px; letter-spacing: .12em;
+  text-transform: uppercase; text-align: center;
+  color: var(--lime); background: var(--well);
+  border: 2px solid var(--lime); border-radius: 0; outline: none;
+  caret-color: var(--lime);
+}
+.top3 input::placeholder { color: var(--line); }
+.top3 input:focus { box-shadow: 0 0 10px rgba(125, 255, 90, .6); }
+.top3 .ask { margin: 8px 0 0; max-width: none; font-family: var(--font-body); font-size: 18px; color: var(--lime); text-align: center; }
 .chip {
   font-family: var(--font-display);
   font-size: 10px;
@@ -311,6 +334,8 @@ kbd.arrow { font-family: "Segoe UI Symbol", "Arial", sans-serif; font-size: 13px
   .mode-btn span { font-size: 15px; }
   .btn.alt { font-size: 8px; }
   .results { font-size: 8px; gap: 6px 12px; }
+  .top3 { font-size: 8px; }
+  .top3 .ask { font-size: 15px; }
   .chip { font-size: 8px; }
 }
 .mode-btn:hover { filter: brightness(1.1); }
@@ -1108,6 +1133,57 @@ html.land .queue { flex-direction: row; }
     well.classList.toggle('danger', danger && state === 'play');
   }
 
+  // ---------- Top-3 board (per mode, saved on this device) ----------
+  const topKey = m => m === 'chaos' ? 'topChaos' : 'top';
+  const cleanName = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3);
+  function loadTop(m) {
+    let b = store.get(topKey(m), null);
+    if (!Array.isArray(b)) {                       // first run: carry over the old best score
+      const old = store.get(bestKey(m), 0);
+      b = old > 0 ? [{ n: '???', s: old }] : [];
+    }
+    return b.filter(e => e && Number.isFinite(e.s))
+      .map(e => ({ n: cleanName(e.n) || '???', s: e.s }))
+      .sort((a, b) => b.s - a.s).slice(0, 3);
+  }
+  let top = [], topRank = -1;                      // board shown on the game-over screen
+  function recordScore(m, score) {
+    top = loadTop(m); topRank = -1;
+    if (score <= 0 || (top.length >= 3 && score <= top[2].s)) return;
+    topRank = top.findIndex(e => score > e.s);
+    if (topRank < 0) topRank = top.length;
+    top.splice(topRank, 0, { n: cleanName(store.get('initials', '')) || '???', s: score });
+    top.length = Math.min(top.length, 3);
+    store.set(topKey(m), top);
+  }
+  function topHtml(m) {
+    let rows = '';
+    for (let i = 0; i < 3; i++) {
+      const e = top[i];
+      if (!e) { rows += `<li class="empty"><span class="rk">${i + 1}</span><span class="nm">---</span><span class="sc">-</span></li>`; continue; }
+      const name = i === topRank
+        ? `<input id="initials" maxlength="3" value="${e.n === '???' ? '' : e.n}" placeholder="???" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" aria-label="Your initials">`
+        : e.n;
+      rows += `<li${i === topRank ? ' class="me"' : ''}><span class="rk">${i + 1}</span><span class="nm">${name}</span><span class="sc">${fmt(e.s)}</span></li>`;
+    }
+    return `<div class="top3"><div class="top3-h">TOP 3 · ${m.toUpperCase()}</div><ol>${rows}</ol>${topRank >= 0 ? '<p class="ask">New high score! Enter your initials</p>' : ''}</div>`;
+  }
+  function wireInitials() {
+    const input = $('initials');
+    if (!input) return;
+    const entry = top[topRank], m = game.mode;
+    const save = () => {
+      const v = cleanName(input.value);
+      if (input.value !== v) input.value = v;
+      entry.n = v || '???';
+      store.set(topKey(m), top);
+      if (v) store.set('initials', v);
+    };
+    input.addEventListener('input', () => { save(); if (input.value.length === 3) input.blur(); });
+    input.addEventListener('change', save);
+    if (!document.documentElement.classList.contains('touch')) { input.focus(); input.select(); }
+  }
+
   // Link back to the game center, only on the GitHub Pages copy
   const HUB_LINK = /(^|\.)github\.io$/.test(location.hostname)
     ? '<a class="hub-link" href="https://csawyer54.github.io/">&#9664; ALL GAMES</a>' : '';
@@ -1141,8 +1217,8 @@ html.land .queue { flex-direction: row; }
           <dt>SCORE</dt><dd>${fmt(game.score)}</dd>
           <dt>LINES</dt><dd>${game.lines}</dd>
           <dt>LEVEL</dt><dd>${game.level}</dd>
-          <dt>BEST</dt><dd>${fmt(best)}</dd>
         </dl>
+        ${topHtml(game.mode)}
         <button class="btn" data-mode="${game.mode}" type="button">PLAY AGAIN</button>
         <button class="btn alt" data-mode="${other}" type="button">TRY ${other.toUpperCase()}</button>
         <p class="hint kbd-only">or press ENTER</p>
@@ -1154,6 +1230,7 @@ html.land .queue { flex-direction: row; }
     for (const b of overlay.querySelectorAll('[data-mode]')) {
       b.addEventListener('click', () => newGame(b.dataset.mode));
     }
+    if (kind === 'over') wireInitials();
   }
 
   // ---------- Rendering ----------
@@ -1428,6 +1505,7 @@ html.land .queue { flex-direction: row; }
       overT += dt;
       if (!overShown && overT > 1000) {
         overShown = true;
+        recordScore(game.mode, game.score);    // before best changes, so a first run seeds from the old best
         if (game.score > best) { best = game.score; store.set(bestKey(game.mode), best); }
         hud(true);
         showOverlay('over');
@@ -1507,7 +1585,9 @@ html.land .queue { flex-direction: row; }
     c: 'hold', C: 'hold', Shift: 'hold', p: 'pause', P: 'pause', Escape: 'pause',
     m: 'music', M: 'music', Enter: 'start'
   };
+  const typing = e => e.target && e.target.tagName === 'INPUT';
   window.addEventListener('keydown', e => {
+    if (typing(e)) { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.target.blur(); } return; }
     const act = KEYMAP[e.key];
     if (!act) return;
     e.preventDefault();
@@ -1515,12 +1595,21 @@ html.land .queue { flex-direction: row; }
     press(act);
   });
   window.addEventListener('keyup', e => {
+    if (typing(e)) return;
     const act = KEYMAP[e.key];
     if (act) release(act);
   });
   window.addEventListener('blur', () => { if (state === 'play') togglePause(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') togglePause(); });
   for (const ev of ['touchend', 'click']) document.addEventListener(ev, () => Sfx.init(), { passive: true });
+  // iOS Safari zooms on two quick taps. Cancel the second tap's default action unless it
+  // landed on a control (those already opt out via touch-action and need their click).
+  let lastTouchEnd = 0;
+  document.addEventListener('touchend', e => {
+    const t = e.target, now = e.timeStamp;
+    if (now - lastTouchEnd < 400 && !(t.closest && t.closest('button, a, input, label'))) e.preventDefault();
+    lastTouchEnd = now;
+  }, { passive: false });
 
   // Touch gestures on the board: drag sideways to move, drag down to soft drop,
   // flick down to hard drop, flick up to hold, tap to rotate.
