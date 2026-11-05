@@ -1,6 +1,4 @@
-<!doctype html>
-<html lang="en">
-<title>Randomino</title>
+<!doctype html><html lang="en"><title>Randomino</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -253,6 +251,8 @@ kbd.arrow { font-family: "Segoe UI Symbol", "Arial", sans-serif; font-size: 13px
 .overlay h2.over { color: var(--pink); text-shadow: 3px 3px 0 var(--well), 0 0 18px rgba(255, 62, 165, .75); }
 .overlay p { margin: 0; max-width: 16em; color: var(--ink); font-size: 21px; text-wrap: balance; }
 .overlay .hint { color: var(--dim); font-size: 18px; }
+.hub-link { color: var(--dim); font-size: 19px; letter-spacing: .08em; text-decoration: none; padding: 4px 8px; }
+.hub-link:hover, .hub-link:focus-visible { color: var(--cyan); }
 .blink { animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 .results { display: grid; grid-template-columns: auto auto; gap: 8px 18px; font-family: var(--font-display); font-size: 10px; text-align: left; }
@@ -1108,6 +1108,10 @@ html.land .queue { flex-direction: row; }
     well.classList.toggle('danger', danger && state === 'play');
   }
 
+  // Link back to the game center, only on the GitHub Pages copy
+  const HUB_LINK = /(^|\.)github\.io$/.test(location.hostname)
+    ? '<a class="hub-link" href="https://csawyerprof.github.io/">&#9664; ALL GAMES</a>' : '';
+
   function showOverlay(kind) {
     overlay.hidden = false;
     overlay.classList.toggle('solid', kind === 'pause');
@@ -1120,11 +1124,13 @@ html.land .queue { flex-direction: row; }
           <button class="mode-btn chaos" data-mode="chaos" type="button"><b>CHAOS</b><span>Grows to 8 blocks</span></button>
         </div>
         <p class="hint blink kbd-only">ENTER plays ${mode.toUpperCase()}</p>
-        <p class="hint touch-only">Swipe to move · Tap to rotate<br>Flick down to drop · Flick up to hold</p>`;
+        <p class="hint touch-only">Swipe to move · Tap to rotate<br>Flick down to drop · Flick up to hold</p>
+        ${HUB_LINK}`;
     } else if (kind === 'pause') {
       html = `<h2>PAUSED</h2>
         <button class="btn" id="ovBtn" type="button">RESUME</button>
-        <p class="hint kbd-only">Press P to resume</p>`;
+        <p class="hint kbd-only">Press P to resume</p>
+        ${HUB_LINK}`;
     } else if (kind === 'over') {
       const isBest = game.score > 0 && game.score >= best;
       const other = game.mode === 'chaos' ? 'classic' : 'chaos';
@@ -1139,7 +1145,8 @@ html.land .queue { flex-direction: row; }
         </dl>
         <button class="btn" data-mode="${game.mode}" type="button">PLAY AGAIN</button>
         <button class="btn alt" data-mode="${other}" type="button">TRY ${other.toUpperCase()}</button>
-        <p class="hint kbd-only">or press ENTER</p>`;
+        <p class="hint kbd-only">or press ENTER</p>
+        ${HUB_LINK}`;
     }
     overlay.innerHTML = `<div class="overlay-inner">${html}</div>`;
     const resume = $('ovBtn');
