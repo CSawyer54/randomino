@@ -280,6 +280,7 @@ kbd.arrow { font-family: "Segoe UI Symbol", "Arial", sans-serif; font-size: 13px
 }
 .top3 input::placeholder { color: var(--line); }
 .top3 input:focus { box-shadow: 0 0 10px rgba(125, 255, 90, .6); }
+.top3 .ask.dim { color: var(--dim); }
 .top3 .ask { margin: 8px 0 0; max-width: none; font-family: var(--font-body); font-size: 18px; color: var(--lime); text-align: center; }
 .chip {
   font-family: var(--font-display);
@@ -858,6 +859,7 @@ html.land .queue { flex-direction: row; }
   }
 
   function newGame(m) {
+    sendWorld();
     Sfx.init();
     if (m === 'classic' || m === 'chaos') { mode = m; store.set('mode', mode); }
     best = store.get(bestKey(mode), 0);
@@ -1071,6 +1073,7 @@ html.land .queue { flex-direction: row; }
   function gravityMs(level) { return Math.max(55, 900 * Math.pow(0.8, level - 1)); }
 
   function gameOver() {
+    startWorld(game.mode, game.score);
     state = 'over';
     overT = 0; overShown = false;
     held.left = held.right = held.down = false; dasDir = 0;
@@ -1160,30 +1163,100 @@ html.land .queue { flex-direction: row; }
     top.length = Math.min(top.length, 3);
     store.set(topKey(m), top);
   }
+  // ---------- World board (online via Supabase; falls back to this device) ----------
+  const WORLD = {
+    url: 'https://znkmokdzrnpwzfbolats.supabase.co/rest/v1/scores',
+    key: 'sb_publishable_vsubarHmAgdSiih1jmJhxA_RYFriuei'      // public by design: read + add only
+  };
+  let world, worldTok = 0, worldGame = '', worldSent = false;  // world: undefined = loading, null = offline
+  async function fetchWorld(g) {
+    const ctl = window.AbortController ? new AbortController() : null;
+    const timer = ctl && setTimeout(() => ctl.abort(), 5000);
+    try {
+      const r = await fetch(`${WORLD.url}?select=name,score&game=eq.${g}&order=score.desc,created_at.asc&limit=3`,
+        { headers: { apikey: WORLD.key }, signal: ctl ? ctl.signal : undefined });
+      if (!r.ok) return null;
+      const rows = await r.json();
+      if (!Array.isArray(rows)) return null;
+      return rows.map(e => ({ n: cleanName(e.name) || '???', s: Number(e.score) })).filter(e => e.s > 0);
+    } catch (e) { return null; } finally { if (timer) clearTimeout(timer); }
+  }
+  function worldBoard(rows, score) {
+    const b = { top: rows.slice(0, 3), rank: -1 };
+    if (score > 0 && (b.top.length < 3 || score > b.top[b.top.length - 1].s)) {
+      b.rank = b.top.findIndex(e => score > e.s);
+      if (b.rank < 0) b.rank = b.top.length;
+      b.top.splice(b.rank, 0, { n: cleanName(store.get('initials', '')) || '???', s: score });
+      b.top.length = Math.min(b.top.length, 3);
+    }
+    return b;
+  }
+  // Post the score once: when 3 letters are typed, or when the player leaves the screen.
+  function sendWorld() {
+    if (!world || world.rank < 0 || worldSent) return;
+    worldSent = true;
+    const e = world.top[world.rank], v = cleanName(e.n);
+    const name = v.length === 3 ? v : (v + '???').slice(0, 3);
+    try {
+      fetch(WORLD.url, {
+        method: 'POST', keepalive: true,
+        headers: { apikey: WORLD.key, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+        body: JSON.stringify({ game: worldGame, name, score: e.s })
+      }).catch(() => {});
+    } catch (err) { /* offline: the device board still has it */ }
+    const input = $('initials'), ask = overlay.querySelector('.top3 .ask');
+    if (input) { input.readOnly = true; input.blur(); }
+    if (ask) ask.textContent = 'Saved to the world board!';
+  }
+  function startWorld(m, score) {
+    const tok = ++worldTok;
+    world = undefined; worldSent = false; worldGame = 'randomino-' + m;
+    fetchWorld(worldGame).then(rows => {
+      if (tok !== worldTok) return;
+      world = rows ? worldBoard(rows, score) : null;
+      if (state === 'over' && overShown) refreshTop();
+    });
+  }
+  function refreshTop() {
+    const el = overlay.querySelector('.top3');
+    if (!el) return;
+    el.outerHTML = topHtml(game.mode);
+    wireInitials();
+  }
+
   function topHtml(m) {
+    const loading = world === undefined;
+    const b = world || { top, rank: topRank };     // offline: this device's board
     let rows = '';
     for (let i = 0; i < 3; i++) {
-      const e = top[i];
+      const e = loading ? null : b.top[i];
       if (!e) { rows += `<li class="empty"><span class="rk">${i + 1}</span><span class="nm">---</span><span class="sc">-</span></li>`; continue; }
-      const name = i === topRank
+      const name = i === b.rank
         ? `<input id="initials" maxlength="3" value="${e.n === '???' ? '' : e.n}" placeholder="???" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" aria-label="Your initials">`
         : e.n;
-      rows += `<li${i === topRank ? ' class="me"' : ''}><span class="rk">${i + 1}</span><span class="nm">${name}</span><span class="sc">${fmt(e.s)}</span></li>`;
+      rows += `<li${i === b.rank ? ' class="me"' : ''}><span class="rk">${i + 1}</span><span class="nm">${name}</span><span class="sc">${fmt(e.s)}</span></li>`;
     }
-    return `<div class="top3"><div class="top3-h">TOP 3 · ${m.toUpperCase()}</div><ol>${rows}</ol>${topRank >= 0 ? '<p class="ask">Enter your initials!</p>' : ''}</div>`;
+    const head = (world === null ? 'MY TOP 3' : 'WORLD TOP 3') + ' · ' + m.toUpperCase();
+    const ask = loading ? '<p class="ask dim">Loading…</p>'
+      : b.rank >= 0 ? '<p class="ask">Enter your initials!</p>' : '';
+    return `<div class="top3"><div class="top3-h">${head}</div><ol>${rows}</ol>${ask}</div>`;
   }
   function wireInitials() {
     const input = $('initials');
     if (!input) return;
-    const entry = top[topRank], m = game.mode;
+    const b = world || { top, rank: topRank };
+    const entry = b.top[b.rank], local = topRank >= 0 ? top[topRank] : null, m = game.mode;
     const save = () => {
       const v = cleanName(input.value);
       if (input.value !== v) input.value = v;
       entry.n = v || '???';
-      store.set(topKey(m), top);
+      if (local) { local.n = entry.n; store.set(topKey(m), top); }
       if (v) store.set('initials', v);
     };
-    input.addEventListener('input', () => { save(); if (input.value.length === 3) input.blur(); });
+    input.addEventListener('input', () => {
+      save();
+      if (input.value.length === 3) { input.blur(); sendWorld(); }
+    });
     input.addEventListener('change', save);
     if (!document.documentElement.classList.contains('touch')) { input.focus(); input.select(); }
   }
@@ -1231,7 +1304,11 @@ html.land .queue { flex-direction: row; }
     for (const b of overlay.querySelectorAll('[data-mode]')) {
       b.addEventListener('click', () => newGame(b.dataset.mode));
     }
-    if (kind === 'over') wireInitials();
+    if (kind === 'over') {
+      wireInitials();
+      const hub = overlay.querySelector('.hub-link');
+      if (hub) hub.addEventListener('click', sendWorld);
+    }
   }
 
   // ---------- Rendering ----------
@@ -1602,6 +1679,8 @@ html.land .queue { flex-direction: row; }
   });
   window.addEventListener('blur', () => { if (state === 'play') togglePause(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') togglePause(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) sendWorld(); });
+  window.addEventListener('pagehide', sendWorld);
   for (const ev of ['touchend', 'click']) document.addEventListener(ev, () => Sfx.init(), { passive: true });
   // iOS Safari zooms on two quick taps. Cancel the second tap's default action unless it
   // landed on a control (those already opt out via touch-action and need their click).
